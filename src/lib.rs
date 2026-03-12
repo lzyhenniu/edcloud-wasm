@@ -30,6 +30,7 @@ use core::panic::PanicInfo;
 /// [17]: Nat64 参数偏移,  [18]: Nat64 参数长度
 /// [19]: IP 参数偏移,     [20]: IP 参数长度
 /// [21]: 是否为全局代理模式 (ProxyAll)
+/// [22]: Turn 参数偏移,   [23]: Turn 参数长度
 static mut RESULT: [i32; 32] = [0; 32];
 
 static mut COMMON_BUF: [u8; 8192] = [0; 8192]; // 8KB 通用数据缓冲区
@@ -663,18 +664,21 @@ unsafe fn match_separator(d: &[u8]) -> Option<usize> {
     None
 }
 
-static URL_PARSE_KEYS: [(&[u8], usize, bool); 11] = [
+static URL_PARSE_KEYS: [(&[u8], usize, bool); 14] = [
     (b"gs5", 13, true),
     (b"s5all", 13, true),
     (b"ghttp", 15, true),
     (b"gnat64", 17, true),
     (b"nat64all", 17, true),
     (b"httpall", 15, true),
+    (b"gturn", 22, true),
+    (b"turnall", 22, true),
     (b"s5", 13, false),
     (b"socks", 13, false),
     (b"http", 15, false),
     (b"ip", 19, false),
     (b"nat64", 17, false),
+    (b"turn", 22, false),
 ];
 
 #[no_mangle]
@@ -682,7 +686,7 @@ pub unsafe extern "C" fn parseUrlWasm(url_len: i32) {
     let len = url_len as usize;
     let data = core::slice::from_raw_parts(COMMON_BUF.as_ptr(), len);
     let mut is_all = false;
-    for i in [13, 14, 15, 16, 17, 18, 19, 20] {
+    for i in [13, 14, 15, 16, 17, 18, 19, 20, 22, 23] {
         set_res(i, -1);
     }
 
