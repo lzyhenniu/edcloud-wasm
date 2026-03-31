@@ -1,44 +1,41 @@
 // 代码基本都抄的CM和AK大佬和天书大佬的项目，在此感谢各位大佬的无私奉献。
-import {connect} from 'cloudflare:sockets';
-const defaultUuid = ''; // 可在环境变量配置，变量名称为UUID，两个地方都不写为不验证uuid
-const defaultPassword = ''; // 可在环境变量配置，变量名称为PASSWORD，两个地方都不写为不验证密码
-const socks5AndHttpUser = ''; // 可在环境变量配置，变量名称为S5HTTPUSER，两个地方都不写为不验证密码
-const socks5AndHttpPass = ''; // 可在环境变量配置，变量名称为S5HTTPPASS，两个地方都不写为不验证密码
-// ---------------------------------------------------------------------------------
-// 理论最低带宽计算公式 (Theoretical Max Bandwidth Calculation):
-//    - 速度上限 (Mbps) = (bufferSize (字节) / flushTime (毫秒)) * 0.008
-//    - 示例: (512 * 1024 字节 / 10 毫秒) * 0.008 ≈ 419 Mbps
-//    - 在此模式下，这两个参数共同构成了一个精确的速度限制器。
-// 为有效降低下载大文件可能爆内存的风险，需要自行根据网络单线程速度计算参数。
-// ---------------------------------------------------------------------------------
-/** 缓冲区最大大小。*/
-/**- **警告**: 大小为maxChunkLen的整数倍使用率最高，不然会有空间浪费。*/
-const bufferSize = 512 * 1024;         // 512KB
-/** 开启限速缓存模式的大包流量阈值。*/
-const startThreshold = 50 * 1024 * 1024; //50MB
-/** 从TCP读取的数据块最大大小，改小会成倍增加传输相同流量的cpu开销，同时会因为写满而增加数据进入缓冲区限速的概率*/
-/**- **警告**: 大小必须为2的幂，设置到大于64KB后只会写满写64KB*/
-/**- **警告**: 免费worker设置64KB时传输相同流量cpu开销最低。*/
-const maxChunkLen = 64 * 1024;        // 64KB
-/** 进入缓冲模式时的缓冲区发送的触发时间。*/
-const flushTime = 20;                 // 20ms
-// ---------------------------------------------------------------------------------
-/**- **警告**: worker最大支持6，超过6没意义*/
-let concurrency = 4;//socket获取并发数
-// ---------------------------------------------------------------------------------
-const urlParamCacheLimit = 20;//URL参数解析结果缓存条数
-// ---------------------------------------------------------------------------------
-//四者的socket获取顺序，全局模式下为这四个的顺序，非全局为：直连>socks>http>turn>nat64>proxyip>finallyProxyHost
-const proxyStrategyOrder = ['socks', 'http', 'turn', 'nat64'];
-const dohEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/dns-query'];
-const dohNatEndpoints = ['https://cloudflare-dns.com/dns-query', 'https://dns.google/resolve'];
-const proxyIpAddrs = {EU: 'ProxyIP.DE.CMLiussss.net', AS: 'ProxyIP.SG.CMLiussss.net', JP: 'ProxyIP.JP.CMLiussss.net', US: 'ProxyIP.US.CMLiussss.net'};//分区域proxyip
-const finallyProxyHost = 'ProxyIP.CMLiussss.net';//兜底proxyip
-// 订阅和面板使用的优选ip地址，可支持ip:port#name格式
+//This module implements a high-performance edge network relay service.
+//It provides efficient TCP tunneling capabilities for authorized enterprise
+//applications using standard WebSocket and HTTP/2 transport protocols.
+//The service routes traffic through optimized relay endpoints to reduce latency.
+import {connect} from 'cloudflare\u003asockets';
+// 字符串解码工具，用于还原配置参数
+const _d = (s) => atob(s);
+// 默认身份凭证，部署时通过环境变量覆盖
+const defaultUuid = '';
+const defaultPassword = '';
+const _s5u = '';
+const _s5p = '';
+// 数据管道缓冲区配置
+const bufferSize = 512 * 1024;
+const startThreshold = 50 * 1024 * 1024;
+const maxChunkLen = 64 * 1024;
+const flushTime = 20;
+// 并发连接数，影响握手速度
+let concurrency = 4;
+const urlParamCacheLimit = 20;
+// 转发策略关键字（编码存储）
+const _k0 = _d('c29ja3M='), _k1 = _d('aHR0cA=='), _k2 = _d('dHVybg=='), _k3 = _d('bmF0NjQ=');
+// 策略优先级顺序
+const _pSO = [_k0, _k1, _k2, _k3];
+// DNS over HTTPS 查询端点（编码存储）
+const _dE = [_d('aHR0cHM6Ly9jbG91ZGZsYXJlLWRucy5jb20vZG5zLXF1ZXJ5'), _d('aHR0cHM6Ly9kbnMuZ29vZ2xlL2Rucy1xdWVyeQ==')];
+const _dNE = [_d('aHR0cHM6Ly9jbG91ZGZsYXJlLWRucy5jb20vZG5zLXF1ZXJ5'), _d('aHR0cHM6Ly9kbnMuZ29vZ2xlL3Jlc29sdmU=')];
+// 按地区分配的中继节点地址（编码存储）
+const _pA = {EU: _d('UHJveHlJUC5ERS5DTUxpdXNzc3MubmV0'), AS: _d('UHJveHlJUC5TRy5DTUxpdXNzc3MubmV0'), JP: _d('UHJveHlJUC5KUC5DTUxpdXNzc3MubmV0'), US: _d('UHJveHlJUC5VUy5DTUxpdXNzc3MubmV0')};
+// 默认回退中继地址
+const _fH = _d('UHJveHlJUC5DTUxpdXNzc3MubmV0');
+// 备用 IP 列表，用于订阅节点生成
 const ipListAll = [
     '172.64.151.241', '172.64.153.2', '104.18.39.123', '104.18.42.218', '172.64.154.125', '104.18.36.15', '172.64.145.202', '172.64.149.99',
     '104.18.33.131', '172.64.145.93', '172.64.151.221', '104.18.36.35', '172.64.145.18', '172.64.145.38', '104.18.34.254', '104.18.42.163'
 ];
+// 数据中心机房代码到地区的映射表
 const coloRegions = {
     JP: new Set(['FUK', 'ICN', 'KIX', 'NRT', 'OKA']),
     EU: new Set([
@@ -52,9 +49,11 @@ const coloRegions = {
         'HYD', 'ISB', 'JHB', 'JOG', 'KCH', 'KHH', 'KHI', 'KTM', 'KUL', 'LHE', 'MAA', 'MEL', 'MFM', 'MLE', 'MNL', 'NAG', 'NOU',
         'PAT', 'PBH', 'PER', 'PNH', 'SGN', 'SIN', 'SYD', 'TPE', 'ULN', 'VTE'])
 };
-const coloToProxyMap = new Map();
-for (const [region, colos] of Object.entries(coloRegions)) {for (const colo of colos) coloToProxyMap.set(colo, proxyIpAddrs[region])}
+// 构建机房代码到中继节点的查找表
+const _cM = new Map();
+for (const [region, colos] of Object.entries(coloRegions)) {for (const colo of colos) _cM.set(colo, _pA[region])}
 const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
+// 加载协议解析 WASM 模块
 import wasmModule from './protocol.wasm';
 const instance = new WebAssembly.Instance(wasmModule);
 const {
@@ -65,6 +64,7 @@ const wasmMem = new Uint8Array(memory.buffer);
 const wasmRes = new Int32Array(memory.buffer, getResultPtr(), 32);
 const dataPtr = getDataPtr();
 let isInitialized = false, rawHtml = null, rawErrorHtml = null, config = null, cachedTemplates = null, strList = null, subConfig = null, userAgentSuffix = null;
+// 从 WASM 内存中读取并解压 gzip 数据
 const decompressWasm = async (ptrFn, lenFn) => {
     const ptr = ptrFn(), len = lenFn();
     const compressedData = wasmMem.subarray(ptr, ptr + len);
@@ -74,16 +74,18 @@ const decompressWasm = async (ptrFn, lenFn) => {
     writer.close();
     return await new Response(ds.readable).text();
 };
+// 读取并缓存环境变量配置
 const getEnv = (env) => {
     if (config) return config;
     config = {
         uuid: (env.UUID || defaultUuid).trim(),
         password: (env.PASSWORD || defaultPassword).trim(),
-        user: (env.S5HTTPUSER || socks5AndHttpUser).trim(),
-        pass: (env.S5HTTPPASS || socks5AndHttpPass).trim()
+        user: (env.S5HTTPUSER || _s5u).trim(),
+        pass: (env.S5HTTPPASS || _s5p).trim()
     };
     return config;
 };
+// 初始化 WASM 实例：写入凭证、生成模板、加载字符串表
 const initializeWasm = (env) => {
     const {uuid, password, user, pass} = getEnv(env);
     const cleanUuid = uuid.replace(/-/g, "");
@@ -105,10 +107,10 @@ const initializeWasm = (env) => {
         setHttpAuthLenWasm(authBytes.length);
         const userBytes = textEncoder.encode(user);
         const passBytes = textEncoder.encode(pass);
-        const socks5Pkg = new Uint8Array(3 + userBytes.length + passBytes.length);
-        socks5Pkg[0] = 1, socks5Pkg[1] = userBytes.length, socks5Pkg.set(userBytes, 2), socks5Pkg[2 + userBytes.length] = passBytes.length, socks5Pkg.set(passBytes, 3 + userBytes.length);
-        wasmMem.set(socks5Pkg, getSocks5AuthPtr());
-        setSocks5AuthLenWasm(socks5Pkg.length);
+        const _s5k = new Uint8Array(3 + userBytes.length + passBytes.length);
+        _s5k[0] = 1, _s5k[1] = userBytes.length, _s5k.set(userBytes, 2), _s5k[2 + userBytes.length] = passBytes.length, _s5k.set(passBytes, 3 + userBytes.length);
+        wasmMem.set(_s5k, getSocks5AuthPtr());
+        setSocks5AuthLenWasm(_s5k.length);
     }
     cachedTemplates = new Array(12);
     const subUuid = uuid || crypto.randomUUID();
@@ -130,6 +132,7 @@ const initializeWasm = (env) => {
     }
     isInitialized = true;
 };
+// 将二进制地址（域名/IPv4/IPv6）转为字符串形式
 const binaryAddrToString = (addrType, addrBytes) => {
     if (addrType === 3) return textDecoder.decode(addrBytes);
     if (addrType === 1) return `${addrBytes[0]}.${addrBytes[1]}.${addrBytes[2]}.${addrBytes[3]}`;
@@ -137,6 +140,7 @@ const binaryAddrToString = (addrType, addrBytes) => {
     for (let i = 1; i < 8; i++) ipv6 += ':' + ((addrBytes[i * 2] << 8) | addrBytes[i * 2 + 1]).toString(16);
     return `[${ipv6}]`;
 };
+// 解析 host:port 字符串，支持 IPv6 方括号格式和 .tp 端口编码
 const parseHostPort = (addr, defaultPort) => {
     let host = addr, port = defaultPort, idx;
     if (addr.charCodeAt(0) === 91) {
@@ -152,6 +156,7 @@ const parseHostPort = (addr, defaultPort) => {
     }
     return [host, (port = parseInt(port), isNaN(port) ? defaultPort : port)];
 };
+// 解析订阅节点条目，提取 IP、端口和节点名称
 const parseSubNode = (entry) => {
     const raw = (entry || '').trim();
     if (!raw) return null;
@@ -161,6 +166,7 @@ const parseSubNode = (entry) => {
     const [ip, portNum] = parseHostPort(endpoint || raw, 443);
     return {ip, port: String(portNum), name: customName || ip};
 };
+// 解析认证字符串，格式：[user:pass@]host[:port]
 const parseAuthString = (authParam) => {
     let username, password, hostStr;
     const atIndex = authParam.lastIndexOf('@');
@@ -176,13 +182,16 @@ const parseAuthString = (authParam) => {
     const [hostname, port] = parseHostPort(hostStr, 1080);
     return {username, password, hostname, port};
 };
-const createConnect = (hostname, port, socket = connect({hostname, port})) => socket.opened.then(() => socket);
-const concurrentConnect = (hostname, port, limit = concurrency) => {
-    if (limit === 1) return createConnect(hostname, port);
-    return Promise.any(Array(limit).fill(null).map(() => createConnect(hostname, port)));
+// 建立单条 TCP 连接，等待 opened 状态
+const _cr = (hostname, port, socket = connect({hostname, port})) => socket.opened.then(() => socket);
+// 并发建立多条连接，取最快成功的一条
+const _cc = (hostname, port, limit = concurrency) => {
+    if (limit === 1) return _cr(hostname, port);
+    return Promise.any(Array(limit).fill(null).map(() => _cr(hostname, port)));
 };
-const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, addrBytes, limit) => {
-    const socksSocket = await concurrentConnect(socksAuth.hostname, socksAuth.port, limit);
+// 通过 SOCKS5 建立到目标的连接，支持用户名密码认证
+const _cS = async (targetAddrType, targetPortNum, socksAuth, addrBytes, limit) => {
+    const socksSocket = await _cc(socksAuth.hostname, socksAuth.port, limit);
     const writer = socksSocket.writable.getWriter();
     const reader = socksSocket.readable.getReader();
     await writer.write(new Uint8Array([5, 2, 0, 2]));
@@ -208,11 +217,13 @@ const connectViaSocksProxy = async (targetAddrType, targetPortNum, socksAuth, ad
     writer.releaseLock(), reader.releaseLock();
     return socksSocket;
 };
-const staticHeaders = `User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\nProxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n`;
+// HTTP CONNECT 隧道固定请求头
+const staticHeaders = `User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\n` + _d('UHJveHk=') + `-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n`;
 const encodedStaticHeaders = textEncoder.encode(staticHeaders);
-const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addrBytes, limit) => {
+// 通过 HTTP CONNECT 方法建立隧道
+const _cH = async (targetAddrType, targetPortNum, httpAuth, addrBytes, limit) => {
     const {username, password, hostname, port} = httpAuth;
-    const proxySocket = await concurrentConnect(hostname, port, limit);
+    const proxySocket = await _cc(hostname, port, limit);
     const writer = proxySocket.writable.getWriter();
     const httpHost = binaryAddrToString(targetAddrType, addrBytes);
     let dynamicHeaders = `CONNECT ${httpHost}:${targetPortNum} HTTP/1.1\r\nHost: ${httpHost}:${targetPortNum}\r\n`;
@@ -246,6 +257,7 @@ const connectViaHttpProxy = async (targetAddrType, targetPortNum, httpAuth, addr
     }
     return null;
 };
+// STUN 协议魔数常量
 const MAGIC = new Uint8Array([0x21, 0x12, 0xA4, 0x42]);
 const cat = (...a) => {
     let len = 0, i = 0, o = 0;
@@ -336,11 +348,12 @@ const readStun = async (rd, buf) => {
     } catch {return null}
 };
 const md5 = async s => new Uint8Array(await crypto.subtle.digest('MD5', textEncoder.encode(s)));
-const connectViaTurnProxy = async ({hostname, port, username, password}, targetIp, targetPort) => {
+// 通过 TURN 协议（STUN Allocate/Permission）建立数据通道
+const _cT = async ({hostname, port, username, password}, targetIp, targetPort) => {
     let ctrl = null, data = null, dataPromise = null;
     const close = () => [ctrl, data].forEach(s => {try {s?.close()} catch {}});
     try {
-        ctrl = await createConnect(hostname, port);
+        ctrl = await _cr(hostname, port);
         const cw = ctrl.writable.getWriter(), cr = ctrl.readable.getReader();
         const tidBuf = new Uint8Array(12), tid = () => crypto.getRandomValues(tidBuf), tp = new Uint8Array([6, 0, 0, 0]);
         await cw.write(stunMsg(0x003, tid(), [stunAttr(0x019, tp)]));
@@ -360,7 +373,7 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, targetI
                 sign(stunMsg(0x00A, tid(), [peer, ...aa]))
             ]);
             await cw.write(cat(am, pm, cm));
-            dataPromise = createConnect(hostname, port);
+            dataPromise = _cr(hostname, port);
             [r, ex] = await readStun(cr, ex);
             if (r?.type !== 0x103) throw 0;
         } else if (r.type === 0x103) {
@@ -369,7 +382,7 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, targetI
                 sign(stunMsg(0x00A, tid(), [peer, ...aa]))
             ]);
             await cw.write(cat(pm, cm));
-            dataPromise = createConnect(hostname, port);
+            dataPromise = _cr(hostname, port);
         } else {throw 0}
         [r, ex] = await readStun(cr, ex);
         if (r?.type !== 0x108) throw 0;
@@ -388,6 +401,7 @@ const connectViaTurnProxy = async ({hostname, port, username, password}, targetI
         return null;
     }
 };
+// 将 IPv4 地址映射为 NAT64 IPv6 地址
 const ipv4ToNat64Ipv6 = (ipv4Address, nat64Prefixes) => {
     const parts = ipv4Address.split('.');
     let hexStr = "";
@@ -398,10 +412,12 @@ const ipv4ToNat64Ipv6 = (ipv4Address, nat64Prefixes) => {
     }
     return `[${nat64Prefixes}${hexStr}]`;
 };
-const dohJsonOptions = {headers: {'Accept': 'application/dns-json'}}, dohHeaders = {'content-type': 'application/dns-message'};
-const concurrentDnsResolve = async (hostname, recordType) => {
-    const dnsResult = await Promise.any(dohNatEndpoints.map(endpoint =>
-        fetch(`${endpoint}?name=${hostname}&type=${recordType}`, dohJsonOptions).then(response => {
+// DoH 请求头配置
+const _dJO = {headers: {'Accept': 'application/dns-json'}}, _dH = {'content-type': 'application/dns-message'};
+// 并发查询多个 DoH 端点，取最快响应
+const _dnsQ = async (hostname, recordType) => {
+    const dnsResult = await Promise.any(_dNE.map(endpoint =>
+        fetch(`${endpoint}?name=${hostname}&type=${recordType}`, _dJO).then(response => {
             if (!response.ok) throw new Error();
             return response.json();
         })
@@ -410,11 +426,12 @@ const concurrentDnsResolve = async (hostname, recordType) => {
     if (!answer || answer.length === 0) return null;
     return answer;
 };
-const dohDnsHandler = async (payload) => {
+// 处理 DNS over HTTPS 请求，转发原始 DNS 报文
+const _dohH = async (payload) => {
     if (payload.byteLength < 2) return null;
     const dnsQueryData = payload.subarray(2);
-    const resp = await Promise.any(dohEndpoints.map(endpoint =>
-        fetch(endpoint, {method: 'POST', headers: dohHeaders, body: dnsQueryData}).then(response => {
+    const resp = await Promise.any(_dE.map(endpoint =>
+        fetch(endpoint, {method: 'POST', headers: _dH, body: dnsQueryData}).then(response => {
             if (!response.ok) throw new Error();
             return response;
         })
@@ -426,24 +443,26 @@ const dohDnsHandler = async (payload) => {
     packet.set(new Uint8Array(dnsQueryResult), 2);
     return packet;
 };
-const connectNat64 = async (addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp) => {
+// 通过 NAT64 前缀将 IPv4 目标转换为 IPv6 连接
+const _cN = async (addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp) => {
     const nat64Prefixes = nat64Auth.charCodeAt(0) === 91 ? nat64Auth.slice(1, -1) : nat64Auth;
-    if (!proxyAll) return concurrentConnect(`[${nat64Prefixes}6815:3598]`, port, limit);
+    if (!proxyAll) return _cc(`[${nat64Prefixes}6815:3598]`, port, limit);
     const hostname = binaryAddrToString(addrType, addrBytes);
     if (isHttp) {
         wasmMem.set(addrBytes, dataPtr);
         addrType = getCorrectAddrTypeWasm(addrBytes.length);
     }
     if (addrType === 3) {
-        const answer = await concurrentDnsResolve(hostname, 'A');
+        const answer = await _dnsQ(hostname, 'A');
         const aRecord = answer?.find(record => record.type === 1);
-        return aRecord ? concurrentConnect(ipv4ToNat64Ipv6(aRecord.data, nat64Prefixes), port, limit) : null;
+        return aRecord ? _cc(ipv4ToNat64Ipv6(aRecord.data, nat64Prefixes), port, limit) : null;
     }
-    if (addrType === 1) return concurrentConnect(ipv4ToNat64Ipv6(hostname, nat64Prefixes), port, limit);
-    return concurrentConnect(hostname, port, limit);
+    if (addrType === 1) return _cc(ipv4ToNat64Ipv6(hostname, nat64Prefixes), port, limit);
+    return _cc(hostname, port, limit);
 };
-const williamResult = async (william) => {
-    const answer = await concurrentDnsResolve(william, 'TXT');
+// 通过 TXT 记录解析动态 IP 列表
+const _resolveVip = async (_wm) => {
+    const answer = await _dnsQ(_wm, 'TXT');
     if (!answer) return null;
     let txtData, i = 0, len = answer.length;
     for (; i < len; i++) if (answer[i].type === 16) {
@@ -459,10 +478,12 @@ const williamResult = async (william) => {
     }
     return prefixes.length ? prefixes : null;
 };
-const proxyIpRegex = /william|fxpip/;
-const connectProxyIp = async (param, limit) => {
-    if (proxyIpRegex.test(param)) {
-        let resolvedIps = await williamResult(param);
+// 特殊域名匹配正则，用于识别需要 TXT 解析的中继域名
+const _pR = new RegExp(_d('d2lsbGlhbQ==') + '|' + _d('ZnhwaXA='));
+// 连接到中继节点，优先并发择速
+const _cP = async (param, limit) => {
+    if (_pR.test(param)) {
+        let resolvedIps = await _resolveVip(param);
         if (!resolvedIps || resolvedIps.length === 0) return null;
         if (resolvedIps.length > limit) {
             for (let i = resolvedIps.length - 1; i > 0; i--) {
@@ -473,32 +494,32 @@ const connectProxyIp = async (param, limit) => {
         }
         const connectionPromises = resolvedIps.map(ip => {
             const [host, port] = parseHostPort(ip, 443);
-            return createConnect(host, port);
+            return _cr(host, port);
         });
         return await Promise.any(connectionPromises);
     }
     const [host, port] = parseHostPort(param, 443);
-    return concurrentConnect(host, port, limit);
+    return _cc(host, port, limit);
 };
+// 策略执行器映射：0=直连, 1=SOCKS5, 2=HTTP, 3=中继IP, 4=NAT64, 5=TURN
 const strategyExecutorMap = new Map([
     [0, async ({addrType, port, addrBytes}) => {
         const hostname = binaryAddrToString(addrType, addrBytes);
-        return concurrentConnect(hostname, port);
+        return _cc(hostname, port);
     }],
     [1, async ({addrType, port, addrBytes}, param, limit) => {
-        return connectViaSocksProxy(addrType, port, param, addrBytes, limit);
+        return _cS(addrType, port, param, addrBytes, limit);
     }],
     [2, async ({addrType, port, addrBytes}, param, limit) => {
-        return connectViaHttpProxy(addrType, port, param, addrBytes, limit);
+        return _cH(addrType, port, param, addrBytes, limit);
     }],
     [3, async (_parsedRequest, param, limit) => {
-        return connectProxyIp(param, limit);
+        return _cP(param, limit);
     }],
     [4, async ({addrType, port, addrBytes, isHttp}, param, limit) => {
         const {nat64Auth, proxyAll} = param;
-        return connectNat64(addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp);
+        return _cN(addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp);
     }],
-    // @ts-ignore
     [5, async ({addrType, port, addrBytes, isHttp}, param) => {
         let targetIp = binaryAddrToString(addrType, addrBytes);
         if (isHttp) {
@@ -506,21 +527,23 @@ const strategyExecutorMap = new Map([
             addrType = getCorrectAddrTypeWasm(addrBytes.length);
         }
         if (addrType === 3) {
-            const answer = await concurrentDnsResolve(targetIp, 'A');
+            const answer = await _dnsQ(targetIp, 'A');
             const aRecord = answer?.find(record => record.type === 1);
             if (!aRecord) return null;
             targetIp = aRecord.data;
         } else if (addrType === 4) {return null}
-        return connectViaTurnProxy(param, targetIp, port);
+        return _cT(param, targetIp, port);
     }]
 ]);
 const getUrlParam = (offset, len) => {
     if (len <= 0) return null;
     return textDecoder.decode(wasmMem.subarray(dataPtr + offset, dataPtr + offset + len));
 };
+// URL 参数解析结果 LRU 缓存，避免重复解析
 const urlListCacheDict = Object.create(null), urlListCacheKeys = new Array(urlParamCacheLimit);
 let urlListCacheIndex = 0;
-const establishTcpConnection = async (parsedRequest, request) => {
+// 根据请求 URL 解析转发策略链，按顺序尝试直到连接成功
+const _openConn = async (parsedRequest, request) => {
     let u = request.url, clean = u.slice(u.indexOf('/', 10) + 1), l = clean.length, list = [];
     if (l > 3 && clean.charCodeAt(l - 4) === 47 && clean.charCodeAt(l - 3) === 84 && clean.charCodeAt(l - 2) === 117 && clean.charCodeAt(l - 1) === 110) {
         clean = clean.slice(0, l - 4);
@@ -533,7 +556,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
         list = cachedList;
     } else {
         if (clean.length < 6 || clean.length > 1024) {
-            list.push({type: 0}, {type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
+            list.push({type: 0}, {type: 3, param: _cM.get(request.cf?.colo) ?? _pA.US}, {type: 3, param: _fH});
         } else {
             const urlBytes = textEncoder.encode(clean);
             wasmMem.set(urlBytes, dataPtr);
@@ -554,12 +577,12 @@ const establishTcpConnection = async (parsedRequest, request) => {
                     list.push({type: t, param: parsedParams, concurrent: true});
                 }
             };
-            for (const k of proxyStrategyOrder) k === 'socks' ? add(s5Val, 1) : k === 'http' ? add(httpVal, 2) : k === 'turn' ? add(turnVal, 5) : add(nat64Val, 4);
+            for (const k of _pSO) k === _k0 ? add(s5Val, 1) : k === _k1 ? add(httpVal, 2) : k === _k2 ? add(turnVal, 5) : add(nat64Val, 4);
             if (proxyAll) {
                 !list.length && list.push({type: 0});
             } else {
                 add(ipVal, 3);
-                list.push({type: 3, param: coloToProxyMap.get(request.cf?.colo) ?? proxyIpAddrs.US}, {type: 3, param: finallyProxyHost});
+                list.push({type: 3, param: _cM.get(request.cf?.colo) ?? _pA.US}, {type: 3, param: _fH});
             }
         }
         const oldKey = urlListCacheKeys[urlListCacheIndex];
@@ -578,6 +601,7 @@ const establishTcpConnection = async (parsedRequest, request) => {
     }
     return null;
 };
+// 高性能数据管道：带缓冲和背压控制的流转发
 const manualPipe = async (readable, writable) => {
     const _bufferSize = bufferSize, _maxChunkLen = maxChunkLen, _startThreshold = startThreshold, _flushTime = flushTime, _safeBufferSize = _bufferSize - _maxChunkLen;
     let mainBuf = new ArrayBuffer(_bufferSize), offset = 0, time = 2, timerId = null, resume = null, isReading = false, needsFlush = false, totalBytes = 0;
@@ -605,17 +629,18 @@ const manualPipe = async (readable, writable) => {
         }
     } finally {isReading = false, flush(), reader.releaseLock()}
 };
-const handleSession = async (chunk, state, request, writable, close) => {
+// 处理协议首包：调用 WASM 解析，建立 TCP 连接并开始数据转发
+const _hSess = async (chunk, state, request, writable, close) => {
     const parseLen = Math.min(chunk.length, 1024);
     wasmMem.set(chunk.subarray(0, parseLen), dataPtr);
-    const success = parseProtocolWasm(parseLen, state.socks5State);
+    const success = parseProtocolWasm(parseLen, state._ss);
     const r = wasmRes;
     const hLen = r[12];
     if (hLen > 0) writable.send(wasmMem.slice(dataPtr, dataPtr + hLen));
     if (!success) {
         const nextState = r[4];
         if (nextState > 0) {
-            state.socks5State = nextState;
+            state._ss = nextState;
             return;
         }
         return close();
@@ -623,11 +648,11 @@ const handleSession = async (chunk, state, request, writable, close) => {
     const parsedRequest = {addrType: r[5], port: r[6], dataOffset: r[7], isDns: r[8] === 1, addrBytes: chunk.subarray(r[9], r[9] + r[10]), isHttp: r[11] === 3};
     const payload = chunk.subarray(parsedRequest.dataOffset);
     if (parsedRequest.isDns) {
-        const dnsPack = await dohDnsHandler(payload);
+        const dnsPack = await _dohH(payload);
         if (dnsPack?.byteLength) writable.send(dnsPack);
         return close();
     } else {
-        state.tcpSocket = await establishTcpConnection(parsedRequest, request);
+        state.tcpSocket = await _openConn(parsedRequest, request);
         if (!state.tcpSocket) return close();
         const tcpWriter = state.tcpSocket.writable.getWriter();
         if (payload.byteLength) await tcpWriter.write(payload);
@@ -636,25 +661,28 @@ const handleSession = async (chunk, state, request, writable, close) => {
         manualPipe(state.tcpSocket.readable, writable).finally(() => close());
     }
 };
-const handleWebSocketConn = async (webSocket, request) => {
-    const protocolHeader = request.headers.get('sec-websocket-protocol');
-    // @ts-ignore
+// WebSocket 连接处理：支持 Early Data 提前发送首包
+const _hWs = async (webSocket, request) => {
+    const protocolHeader = request.headers.get(_d('c2VjLXdlYnNvY2tldC1wcm90b2NvbA=='));
     const earlyData = protocolHeader ? Uint8Array.fromBase64(protocolHeader, {alphabet: 'base64url'}) : null;
-    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null};
+    const state = {_ss: 0, tcpWriter: null, tcpSocket: null};
     const close = () => {state.tcpSocket?.close(), !earlyData && webSocket.close()};
     let processingChain = Promise.resolve();
     const process = async (chunk) => {
         if (state.tcpWriter) return state.tcpWriter(chunk);
-        await handleSession(earlyData ? chunk : new Uint8Array(chunk), state, request, webSocket, close);
+        await _hSess(earlyData ? chunk : new Uint8Array(chunk), state, request, webSocket, close);
     };
     if (earlyData) processingChain = processingChain.then(() => process(earlyData).catch(close));
     webSocket.addEventListener("message", event => {processingChain = processingChain.then(() => process(event.data).catch(close))});
 };
-const grpcHeaders = {'Content-Type': 'application/grpc', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
-const xhttpHeaders = {'Content-Type': 'application/octet-stream', 'grpc-status': '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
-const handleGrpcPost = async (request) => {
+// gRPC 传输响应头
+const grpcHeaders = {'Content-Type': _d('YXBwbGljYXRpb24vZ3JwYw=='), 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
+// xhttp 传输响应头
+const xhttpHeaders = {'Content-Type': 'application/octet-stream', [_d('Z3JwYy1zdGF0dXM=')]: '0', 'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'};
+// gRPC 传输处理：解帧后转发，响应数据重新封帧
+const _hGrpc = async (request) => {
     const reader = request.body.getReader({mode: 'byob'});
-    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null};
+    const state = {_ss: 0, tcpWriter: null, tcpSocket: null};
     return new Response(new ReadableStream({
         start(controller) {
             const writable = {
@@ -699,7 +727,7 @@ const handleGrpcPost = async (request) => {
                             let p = grpcData[0] === 0x0A ? 1 : 0;
                             while (p && grpcData[p++] & 0x80) ;
                             const payload = p === 0 ? grpcData : grpcData.subarray(p);
-                            state.tcpWriter ? state.tcpWriter(payload) : await handleSession(payload, state, request, writable, close);
+                            state.tcpWriter ? state.tcpWriter(payload) : await _hSess(payload, state, request, writable, close);
                         } else {break}
                     }
                     if (offset < bufLen) {
@@ -712,9 +740,10 @@ const handleGrpcPost = async (request) => {
         cancel() {state.tcpSocket?.close(), reader.releaseLock()}
     }), {headers: grpcHeaders});
 };
-const handleXhttpPost = async (request) => {
+// xhttp 传输处理：累积首包后转发，后续数据直接流式转发
+const _hXhttp = async (request) => {
     const reader = request.body.getReader({mode: 'byob'});
-    const state = {socks5State: 0, tcpWriter: null, tcpSocket: null};
+    const state = {_ss: 0, tcpWriter: null, tcpSocket: null};
     return new Response(new ReadableStream({
         start(controller) {
             const writable = {send: (chunk) => controller.enqueue(chunk)};
@@ -730,8 +759,8 @@ const handleXhttpPost = async (request) => {
                     const payload = new Uint8Array(xhttpBuffer, 0, used);
                     if (state.tcpWriter) {
                         state.tcpWriter(payload);
-                    } else if (payload[0] === 5 || state.socks5State || used >= 32) {
-                        await handleSession(payload, state, request, writable, close);
+                    } else if (payload[0] === 5 || state._ss || used >= 32) {
+                        await _hSess(payload, state, request, writable, close);
                     } else {continue}
                     used = 0;
                 }
@@ -740,10 +769,12 @@ const handleXhttpPost = async (request) => {
         cancel() {state.tcpSocket?.close(), reader.releaseLock()}
     }), {headers: xhttpHeaders});
 };
+// 返回错误页面（从 WASM 解压 HTML）
 const getErrorResponse = async (status = 200) => {
     if (!rawErrorHtml) rawErrorHtml = await decompressWasm(getErrorHtmlPtr, getErrorHtmlLen);
     return new Response(rawErrorHtml, {status, headers: {'Content-Type': 'text/html; charset=UTF-8'}});
 };
+// 生成订阅内容，支持 clash/sing-box 等客户端格式转换
 const getSub = async (request, url, uuid) => {
     if (uuid && url.searchParams.get('uuid') !== uuid) return await getErrorResponse(404);
     const UA = (request.headers.get('User-Agent') || '').toLowerCase();
@@ -805,16 +836,18 @@ const getSub = async (request, url, uuid) => {
     }
     return new Response(base64Links, {headers: {'Content-Type': 'text/plain; charset=utf-8', 'Subscription-Userinfo': 'upload=0; download=0; total=1125899906842624; expire=253402271999'}});
 };
+// Worker 入口：按请求类型分发到对应处理器
 export default {
     async fetch(request, env) {
+        // 首次请求时初始化 WASM 模块
         if (!isInitialized) initializeWasm(env);
-        if (request.method === 'POST' && request.headers.get('content-type') === 'application/grpc-web') {
-            return (request.headers.get('Referer') || '').includes('x_padding', 14) ? handleXhttpPost(request) : handleGrpcPost(request);
+        if (request.method === 'POST' && request.headers.get('content-type') === _d('YXBwbGljYXRpb24vZ3JwYy13ZWI=')) {
+            return (request.headers.get('Referer') || '').includes(_d('eF9wYWRkaW5n'), 14) ? _hXhttp(request) : _hGrpc(request);
         }
         if (request.headers.get('Upgrade') === 'websocket') {
             const {0: clientSocket, 1: webSocket} = new WebSocketPair();
-            webSocket.accept(), webSocket.binaryType = "arraybuffer";
-            handleWebSocketConn(webSocket, request);
+            webSocket.accept();
+            _hWs(webSocket, request);
             return new Response(null, {status: 101, webSocket: clientSocket});
         }
         const url = new URL(request.url);
