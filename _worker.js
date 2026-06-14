@@ -22,7 +22,7 @@ const startThreshold = 50 * 1024 * 1024; //50MB
 /**- **警告**: 免费worker设置64KB时传输相同流量cpu开销最低。*/
 const maxChunkLen = 64 * 1024;        // 64KB
 /** 进入缓冲模式时的缓冲区发送的触发时间。*/
-const flushTime = 20;                 // 20ms
+const flushTime = 10;                 // 10ms
 // ---------------------------------------------------------------------------------
 /** SS AEAD加密时每批并发处理的payload分片数量，length加密开销低，会随payload一起提交。*/
 const ssAeadEncryptCount = 4;
@@ -60,12 +60,14 @@ const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
 import wasmModule from './protocol.wasm';
 const instance = new WebAssembly.Instance(wasmModule);
 const {
-    memory, getUuidPtr, getResultPtr, getDataPtr, getHttpAuthPtr, getSocks5AuthPtr, setHttpAuthLenWasm, setSocks5AuthLenWasm, parseProtocolWasm, parseUrlWasm,
-    initCredentialsWasm, getPanelHtmlPtr, getPanelHtmlLen, getErrorHtmlPtr, getErrorHtmlLen, getCorrectAddrTypeWasm, getTemplateWasm, getSecretStringWasm
+    memory, getUuidPtr, getResultPtr, getDataPtr, getHttpAuthPtr, getSocks5AuthPtr, getGrpcFramePtr, getGrpcFrameMaxPayloadWasm, setHttpAuthLenWasm, setSocks5AuthLenWasm, parseProtocolWasm, parseUrlWasm,
+    initCredentialsWasm, getPanelHtmlPtr, getPanelHtmlLen, getErrorHtmlPtr, getErrorHtmlLen, getCorrectAddrTypeWasm, getTemplateWasm, getSecretStringWasm, encodeGrpcFrameWasm
 } = instance.exports;
 const wasmMem = new Uint8Array(memory.buffer);
 const wasmRes = new Int32Array(memory.buffer, getResultPtr(), 32);
 const dataPtr = getDataPtr();
+const grpcFramePtr = getGrpcFramePtr();
+const grpcFrameMaxPayload = getGrpcFrameMaxPayloadWasm();
 let isInitialized = false, rawHtml = null, rawErrorHtml = null, config = null, cachedTemplates = null, strList = null, userAgentSuffix = null;
 const decompressWasm = async (ptrFn, lenFn) => {
     const ptr = ptrFn(), len = lenFn();
@@ -113,7 +115,7 @@ const initializeWasm = (env) => {
         wasmMem.set(socks5Pkg, getSocks5AuthPtr());
         setSocks5AuthLenWasm(socks5Pkg.length);
     }
-    cachedTemplates = new Array(12);
+    cachedTemplates = new Array(13);
     const subUuid = uuid || crypto.randomUUID();
     const subPassword = password || crypto.randomUUID();
     globalThis.subUuid = subUuid;
@@ -125,11 +127,11 @@ const initializeWasm = (env) => {
     for (let i = 0; i < 20; i++) {strList[i] = getSecret(i)}
     const edge = strList[2];
     userAgentSuffix = edge + strList[3] + edge + strList[4];
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 13; i++) {
         const len = getTemplateWasm(i);
         const tmpl = textDecoder.decode(wasmMem.subarray(dataPtr, dataPtr + len));
         const baseTmpl = tmpl.replaceAll("{{ECHDNS}}", encodeURIComponent(sharedEchDns));
-        cachedTemplates[i] = i < 6 ? baseTmpl.replaceAll("{{UUID}}", subUuid) : baseTmpl.replaceAll("{{PASSWORD}}", subPassword);
+        cachedTemplates[i] = i < 7 ? baseTmpl.replaceAll("{{UUID}}", subUuid) : baseTmpl.replaceAll("{{PASSWORD}}", subPassword);
     }
     isInitialized = true;
 };
@@ -305,13 +307,13 @@ const parseHostPort = (addr, defaultPort) => {
     }
     return [host, (port = parseInt(port), isNaN(port) ? defaultPort : port)];
 };
-const parseSubNode = (entry) => {
+const parseSubNode = (entry, defaultPort = 443) => {
     const raw = (entry || '').trim();
     if (!raw) return null;
     const hashIndex = raw.indexOf('#');
     const endpoint = hashIndex === -1 ? raw : raw.slice(0, hashIndex).trim();
     const customName = hashIndex === -1 ? '' : raw.slice(hashIndex + 1).trim();
-    const [ip, portNum] = parseHostPort(endpoint || raw, 443);
+    const [ip, portNum] = parseHostPort(endpoint || raw, defaultPort);
     return {ip, port: String(portNum), name: customName || ip};
 };
 const parseAuthString = (authParam) => {
@@ -580,6 +582,47 @@ const dohDnsHandler = async (payload) => {
     packet.set(new Uint8Array(dnsQueryResult), 2);
     return packet;
 };
+const createDnsWriter = (state, writable, close, closeAfterResponse) => {
+    let pending = emptyU8, closed = false;
+    const sendDnsResponse = async (dnsPack) => {
+        if (state.ssOutbound) {
+            if (state.ssResponseSalt) {
+                writable.send(state.ssResponseSalt);
+                state.ssResponseSalt = null;
+            }
+            const encryptedDns = await ssAeadEncryptChunks(state.ssOutbound, dnsPack);
+            if (encryptedDns.byteLength) writable.send(encryptedDns);
+        } else {
+            writable.send(dnsPack);
+        }
+    };
+    return async (chunk) => {
+        if (closed || !chunk?.byteLength) return;
+        chunk = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+        let buf = chunk;
+        if (pending.byteLength) {
+            buf = new Uint8Array(pending.byteLength + chunk.byteLength);
+            buf.set(pending);
+            buf.set(chunk, pending.byteLength);
+            pending = emptyU8;
+        }
+        let offset = 0;
+        while (buf.byteLength - offset >= 2) {
+            const dnsLen = (buf[offset] << 8) | buf[offset + 1];
+            const end = offset + 2 + dnsLen;
+            if (buf.byteLength < end) break;
+            const dnsPack = await dohDnsHandler(buf.subarray(offset, end));
+            if (dnsPack?.byteLength) await sendDnsResponse(dnsPack);
+            offset = end;
+            if (closeAfterResponse) {
+                closed = true;
+                close();
+                return;
+            }
+        }
+        if (offset < buf.byteLength) pending = buf.slice(offset);
+    };
+};
 const connectNat64 = async (addrType, port, nat64Auth, addrBytes, proxyAll, limit, isHttp) => {
     const nat64Prefixes = nat64Auth.charCodeAt(0) === 91 ? nat64Auth.slice(1, -1) : nat64Auth;
     if (!proxyAll) return concurrentConnect(`[${nat64Prefixes}6815:3598]`, port, limit);
@@ -744,7 +787,7 @@ const lowerBounds = new Uint16Array([1024, 1536, 2048, 2560, 3072, 3584, 4096, 5
 const manualPipe = async (readable, writable, close) => {
     const safeBufferSize = bufferSize - maxChunkLen, fastFlushOffset = Math.max(bufferSize / flushTime * 2, maxChunkLen * 2);
     let buffer = new ArrayBuffer(bufferSize), spareBuffer = new ArrayBuffer(maxChunkLen), bufferView = new Uint8Array(buffer);
-    let offset = 0, totalBytes = 0, time = 2, timerId = null, resume = null, isReading = false, needsFlush = false, protectFlush = false;
+    let offset = 0, totalBytes = 0, time = 1, timerId = null, resume = null, isReading = false, needsFlush = false, protectFlush = false;
     let globalCount = new Uint32Array(14), globalBytes = new Uint32Array(14);
     let statCount = 0, totalCount = 0, totalGlobalBytes = 0, isClose = false, fastFlush = true;
     const flushBuffer = () => {
@@ -789,7 +832,7 @@ const manualPipe = async (readable, writable, close) => {
                 flushBuffer();
             } else {
                 if (fastFlush) {
-                    time = 2;
+                    time = 1;
                 } else {
                     const idx = chunkLen >= 30720 ? 13 : chunkIdxLookup[chunkLen >> 9];
                     globalCount[idx]++, globalBytes[idx] += chunkLen, statCount++, totalCount++, totalGlobalBytes += chunkLen;
@@ -804,7 +847,7 @@ const manualPipe = async (readable, writable, close) => {
                         score > maxScore && (maxScore = score, maxIdx = i);
                     }
                     if (chunkLen < lowerBounds[maxIdx]) {
-                        totalBytes = 0, time = 2;
+                        totalBytes = 0, time = 1;
                     } else if ((totalBytes += chunkLen) > startThreshold) {
                         time = flushTime;
                     }
@@ -862,20 +905,11 @@ const handleSession = async (chunk, state, request, writable, close, isEarlyData
         payload = chunk.subarray(parsedRequest.dataOffset);
     }
     if (parsedRequest.isDns) {
-        const dnsPack = await dohDnsHandler(payload);
-        if (dnsPack?.byteLength) {
-            if (isSs || state.ssOutbound) {
-                if (state.ssResponseSalt) {
-                    writable.send(state.ssResponseSalt);
-                    state.ssResponseSalt = null;
-                }
-                const encryptedDns = await ssAeadEncryptChunks(state.ssOutbound, dnsPack);
-                if (encryptedDns.byteLength) writable.send(encryptedDns);
-            } else {
-                writable.send(dnsPack);
-            }
-        }
-        if (!isEarlyData) return close();
+        const dnsWriter = createDnsWriter(state, writable, close, !(isEarlyData && payload.byteLength));
+        state.tcpWriter = (isSs || state.ssOutbound) ? async (c) => {
+            await ssAeadDecryptFeed(state.ssInbound, c instanceof Uint8Array ? c : new Uint8Array(c), dnsWriter);
+        } : dnsWriter;
+        return await dnsWriter(payload);
     } else {
         state.tcpSocket = await establishTcpConnection(parsedRequest, request);
         if (!state.tcpSocket) return close();
@@ -939,24 +973,12 @@ const handleGrpcPost = async (request, reader, buffer, used) => {
             const writable = {
                 send: (chunk) => {
                     const len = chunk.byteLength;
-                    let varintLen = 1;
-                    for (let v = len >>> 7; v; v >>>= 7) varintLen++;
-                    const totalPayloadLen = 1 + varintLen + len;
-                    const grpcFrame = new Uint8Array(5 + totalPayloadLen);
-                    grpcFrame[0] = 0;
-                    grpcFrame[1] = totalPayloadLen >>> 24;
-                    grpcFrame[2] = totalPayloadLen >>> 16;
-                    grpcFrame[3] = totalPayloadLen >>> 8;
-                    grpcFrame[4] = totalPayloadLen;
-                    grpcFrame[5] = 0x0A;
-                    let p = 6, v = len;
-                    while (v > 127) {
-                        grpcFrame[p++] = (v & 0x7F) | 0x80;
-                        v >>>= 7;
-                    }
-                    grpcFrame[p++] = v;
-                    grpcFrame.set(chunk, p);
-                    controller.enqueue(grpcFrame);
+                    if (!len) return;
+                    if (len > grpcFrameMaxPayload) return close();
+                    wasmMem.set(chunk, grpcFramePtr);
+                    const frameLen = encodeGrpcFrameWasm(len);
+                    if (frameLen <= 0) return close();
+                    controller.enqueue(wasmMem.slice(grpcFramePtr, grpcFramePtr + frameLen));
                 }
             };
             (async () => {
@@ -996,7 +1018,7 @@ const handleXhttpPost = async (request, reader, xhttpBuffer, used) => {
     return new Response(new ReadableStream({
         start(controller) {
             close = () => {try {controller.close()} catch {}};
-            const writable = {send: (chunk) => {controller.enqueue(chunk)}};
+            const writable = {send: (chunk) => controller.enqueue(chunk)};
             (async () => {
                 while (true) {
                     if (used > 0) {
@@ -1031,25 +1053,29 @@ const getSub = async (request, url, uuid) => {
     const hasXhttp = url.searchParams.get('xhttp') === '1';
     const hasGRPC = url.searchParams.get('grpc') === '1';
     const hasECH = url.searchParams.get('ech') === '1';
+    const hasWsNoTLS = url.searchParams.get('wstls') === '0' || url.searchParams.get('wsnotls') === '1';
     const encPath = encodeURIComponent(proxyPath);
     const parts = [];
-    const processTemplate = (index) => {
+    const processTemplate = (index, defaultPort = 443) => {
         if (cachedTemplates[index]) {
             const tmpl = cachedTemplates[index].replaceAll("{{HOST}}", host).replaceAll("{{PATH}}", encPath);
             ipListAll.forEach(entry => {
-                const node = parseSubNode(entry);
+                const node = parseSubNode(entry, defaultPort);
                 if (!node) return;
                 parts.push(tmpl.replaceAll("{{IP}}", node.ip).replaceAll("{{port}}", node.port).replaceAll("{{name}}", node.name));
             });
         }
     };
-    const addNodes = (base) => {
-        if (hasWS) processTemplate(base + (hasECH ? 1 : 0));
-        if (hasXhttp) processTemplate(base + (hasECH ? 3 : 2));
-        if (hasGRPC) processTemplate(base + (hasECH ? 5 : 4));
+    const addNodes = (base, allowWsNoTLS) => {
+        const wsNoTLS = allowWsNoTLS && hasWsNoTLS;
+        const xhttpBase = base + (allowWsNoTLS ? 3 : 2);
+        const grpcBase = base + (allowWsNoTLS ? 5 : 4);
+        if (hasWS) processTemplate(base + (wsNoTLS ? 2 : hasECH ? 1 : 0), wsNoTLS ? 80 : 443);
+        if (hasXhttp) processTemplate(xhttpBase + (hasECH ? 1 : 0));
+        if (hasGRPC) processTemplate(grpcBase + (hasECH ? 1 : 0));
     };
-    if (hasVL) addNodes(0);
-    if (hasTR) addNodes(6);
+    if (hasVL) addNodes(0, true);
+    if (hasTR) addNodes(7, false);
     const finalLinks = parts.join("\n");
     const base64Links = btoa(unescape(encodeURIComponent(finalLinks)));
     if (ua.includes(strList[18])) return new Response(base64Links, {headers: {'Content-Type': 'text/plain; charset=utf-8'}});
@@ -1061,7 +1087,7 @@ const getSub = async (request, url, uuid) => {
                     : (url.searchParams.has(strList[9]) || ua.includes(strList[9])) ? strList[9]
                         : (url.searchParams.has(strList[10]) || ua.includes(strList[10])) ? strList[10] : '';
     if (target) {
-        const baseUrl = `${url.protocol}//${url.host}${url.pathname}?uuid=${globalThis.subUuid}&format=raw&path=${encPath}&vl=${hasVL ? 1 : 0}&tj=${hasTR ? 1 : 0}&ws=${hasWS ? 1 : 0}&xhttp=${hasXhttp ? 1 : 0}&grpc=${hasGRPC ? 1 : 0}`;
+        const baseUrl = `${url.protocol}//${url.host}${url.pathname}?uuid=${globalThis.subUuid}&format=raw&path=${encPath}&vl=${hasVL ? 1 : 0}&tj=${hasTR ? 1 : 0}&ws=${hasWS ? 1 : 0}&wstls=${hasWsNoTLS ? 0 : 1}&xhttp=${hasXhttp ? 1 : 0}&grpc=${hasGRPC ? 1 : 0}&ech=${hasECH ? 1 : 0}`;
         const convertUrl = `${strList[0]}/sub?target=${target}&url=${encodeURIComponent(baseUrl)}&insert=false&config=${encodeURIComponent(strList[1])}&emoji=true&scv=true`;
         try {
             const response = await fetch(convertUrl, {
